@@ -146,6 +146,10 @@ az functionapp deployment source config-zip \
 
 The function uses in-memory caching per instance. After the first request, the JWKS response is cached for `JWKS_CACHE_SECONDS` (default 300). The `Cache-Control` header is also set to allow downstream HTTP caching.
 
+Cache refreshes are serialized with a lock, so when the cache expires only a single request calls Key Vault while concurrent requests wait for the refreshed result (preventing a cache stampede).
+
+If a refresh fails (e.g. Key Vault is temporarily unreachable) and a previously cached JWKS is available, that last-known-good response is served for a short retry window (30s) instead of returning an error. This keeps downstream token validation working during transient Key Vault outages. A `500` is only returned when no cached value exists yet.
+
 ## Supported Key Types
 
 Currently only **RSA** keys (including RSA-HSM) are supported. Non-RSA keys are skipped with a warning log.
