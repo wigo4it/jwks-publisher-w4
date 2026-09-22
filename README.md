@@ -1,5 +1,7 @@
 # JWKS Publisher - Azure Function App
 
+> Overgenomen van [`wigo4it/azure-jwks-publisher`](https://github.com/wigo4it/azure-jwks-publisher) (Mark Nekeman, juni 2026) op 22 september 2026 en sindsdien beheerd door CE&E als referentie-implementatie voor gemeenten die API's van Wigo4it aanroepen met `private_key_jwt`. Wijzigingen gaan via een PR; team `@wigo4it/ce-e` is eigenaar.
+
 An Azure Function App that publishes RSA public keys from Azure Key Vault as a [JWKS (JSON Web Key Set)](https://datatracker.ietf.org/doc/html/rfc7517) endpoint. This allows JWT validators to retrieve your signing keys via the standard `/.well-known/jwks.json` path.
 
 ## Endpoint
