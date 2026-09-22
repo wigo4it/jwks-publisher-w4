@@ -29,6 +29,10 @@ Returns a JWKS document containing the public RSA keys configured in Azure Key V
 }
 ```
 
+## Key rotation
+
+With the default settings the endpoint publishes the two newest enabled versions of every configured key, each with `kid` = `<key name>-<key version>`. Rotate a key by creating a new version (manually with `az keyvault key rotate`, or automatically with a rotation policy: `az keyvault key rotation-policy update --vault-name <vault> --name <key> --value policy.json`). The new version appears in the JWKS next to the previous one within `JWKS_CACHE_SECONDS`. The signing application must sign with the current version and put the same `kid` (`<name>-<version>`, the version is `KeyVaultKey.Properties.Version`) in the token header; a validator that caches keys by `kid`, such as Keycloak, then fetches the JWKS again and accepts the new key without any downtime. Disable or delete a version in Key Vault to remove it from the JWKS.
+
 ## Prerequisites
 
 - .NET 8.0 SDK
@@ -44,6 +48,8 @@ Returns a JWKS document containing the public RSA keys configured in Azure Key V
 | `KEYVAULT_URI` | Yes | The URI of your Azure Key Vault, e.g. `https://my-vault.vault.azure.net/` |
 | `JWKS_KEY_NAMES` | Yes | Comma-separated list of key names in Key Vault to publish, e.g. `key-signing-1,key-signing-2` |
 | `JWKS_CACHE_SECONDS` | No | How long to cache the JWKS response in memory (default: `300` seconds) |
+| `JWKS_KEY_VERSIONS` | No | How many of the newest enabled versions of each key to publish, each with its own `kid` (default: `2`). Publishing the current and the previous version is what makes key rotation seamless for consumers that select keys by `kid`. |
+| `JWKS_KID_MODE` | No | `name-version` (default): `kid` is `<key name>-<key version>`, unique per version. `name`: legacy behaviour, only the current version with `kid` = key name (no seamless rotation). |
 
 ## Key Vault Permissions
 

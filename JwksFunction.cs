@@ -63,6 +63,17 @@ public class JwksFunction
             return await Error(req, 500, "Missing JWKS_KEY_NAMES app setting (comma-separated key names).");
         }
 
+        // Rotatie: publiceer per sleutel de N nieuwste ingeschakelde versies, elk met een
+        // eigen kid (<naam>-<versie>). Zo staat de nieuwe versie naast de oude, en kiest een
+        // validator (Keycloak) op kid de juiste sleutel. JWKS_KID_MODE=name geeft het oude
+        // gedrag: alleen de huidige versie, kid = sleutelnaam (geen rotatie zonder onderbreking).
+        var versionCount = Math.Max(1, GetIntEnv("JWKS_KEY_VERSIONS", 2));
+        var kidMode = (Environment.GetEnvironmentVariable("JWKS_KID_MODE") ?? "name-version").Trim().ToLowerInvariant();
+        if (kidMode == "name")
+        {
+            versionCount = 1;
+        }
+
         await _refreshLock.WaitAsync();
         try
         {
@@ -75,7 +86,7 @@ public class JwksFunction
 
             try
             {
-                var json = await BuildJwksAsync(kvUri, keyNames);
+                var json = await BuildJwksAsync(kvUri, keyNames, versionCount, kidMode);
                 if (json != null)
                 {
                     _cachedJwksJson = json;
@@ -109,7 +120,7 @@ public class JwksFunction
         }
     }
 
-    private async Task<string?> BuildJwksAsync(string kvUri, string[] keyNames)
+    private async Task<string?> BuildJwksAsync(string kvUri, string[] keyNames, int versionCount, string kidMode)
     {
         var credential = new DefaultAzureCredential();
         var keyClient = new KeyClient(new Uri(kvUri), credential);
@@ -120,31 +131,32 @@ public class JwksFunction
         {
             try
             {
-                var keyResp = await keyClient.GetKeyAsync(keyName);
-                var kvKey = keyResp.Value;
-
-                if (kvKey.KeyType != KeyType.Rsa && kvKey.KeyType != KeyType.RsaHsm)
+                foreach (var kvKey in await LoadVersionsAsync(keyClient, keyName, versionCount))
                 {
-                    _logger.LogWarning("Key {keyName} is not RSA (type: {type}). Skipping.", keyName, kvKey.KeyType);
-                    continue;
+                    if (kvKey.KeyType != KeyType.Rsa && kvKey.KeyType != KeyType.RsaHsm)
+                    {
+                        _logger.LogWarning("Key {keyName} is not RSA (type: {type}). Skipping.", keyName, kvKey.KeyType);
+                        continue;
+                    }
+
+                    var rsaKey = kvKey.Key;
+                    var n = Base64Url(rsaKey.N);
+                    var e = Base64Url(rsaKey.E);
+
+                    // kid: sleutelnaam plus versie, zodat elke versie een unieke kid heeft;
+                    // in mode "name" alleen de naam (compatibel met eerdere consumers).
+                    var kid = kidMode == "name" ? kvKey.Name : $"{kvKey.Name}-{kvKey.Properties.Version}";
+
+                    jwkList.Add(new Jwk
+                    {
+                        Kty = "RSA",
+                        Use = "sig",
+                        Alg = "RS256",
+                        Kid = kid,
+                        N = n,
+                        E = e
+                    });
                 }
-
-                var rsaKey = kvKey.Key;
-                var n = Base64Url(rsaKey.N);
-                var e = Base64Url(rsaKey.E);
-
-                // kid: use the key name as the key ID
-                var kid = kvKey.Name;
-
-                jwkList.Add(new Jwk
-                {
-                    Kty = "RSA",
-                    Use = "sig",
-                    Alg = "RS256",
-                    Kid = kid,
-                    N = n,
-                    E = e
-                });
             }
             catch (Exception ex)
             {
@@ -164,6 +176,39 @@ public class JwksFunction
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
             WriteIndented = false
         });
+    }
+
+    // De N nieuwste ingeschakelde versies van een sleutel, nieuwste eerst. Met N = 1 is dit
+    // de huidige versie (zelfde als GetKeyAsync(keyName)).
+    private static async Task<List<KeyVaultKey>> LoadVersionsAsync(KeyClient keyClient, string keyName, int versionCount)
+    {
+        var result = new List<KeyVaultKey>();
+        if (versionCount == 1)
+        {
+            var current = await keyClient.GetKeyAsync(keyName);
+            result.Add(current.Value);
+            return result;
+        }
+
+        var versions = new List<KeyProperties>();
+        await foreach (var props in keyClient.GetPropertiesOfKeyVersionsAsync(keyName))
+        {
+            if (props.Enabled == false)
+            {
+                continue;
+            }
+            versions.Add(props);
+        }
+
+        foreach (var props in versions
+                     .OrderByDescending(p => p.CreatedOn ?? DateTimeOffset.MinValue)
+                     .Take(versionCount))
+        {
+            var key = await keyClient.GetKeyAsync(keyName, props.Version);
+            result.Add(key.Value);
+        }
+
+        return result;
     }
 
     // Serveert de laatst-bekende-goede JWKS en zet een korte retry-window zodat
